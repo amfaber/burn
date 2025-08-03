@@ -63,6 +63,7 @@ cubecl = { workspace = true, features = [
     "random",
     "stdlib",
 ] }
+tracing = { workspace = true }
 
 bytemuck = { workspace = true }
 derive-new = { workspace = true }

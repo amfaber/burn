@@ -92,6 +92,7 @@ pub struct MultiLabelClassificationOutput<B: Backend> {
 impl<B: Backend> ItemLazy for MultiLabelClassificationOutput<B> {
     type ItemSync = MultiLabelClassificationOutput<NdArray>;
 
+    #[tracing::instrument(skip_all)]
     fn sync(self) -> Self::ItemSync {
         let [output, loss, targets] = Transaction::default()
             .register(self.output)

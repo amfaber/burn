@@ -30,6 +30,7 @@ impl<M> GradientsAccumulator<M> {
 
 impl<M> GradientsAccumulator<M> {
     /// Accumulate the given gradients for each parameter in the given module.
+    #[tracing::instrument(skip_all)]
     pub fn accumulate<B: AutodiffBackend>(&mut self, module: &M, grads: GradientsParams)
     where
         M: AutodiffModule<B>,
@@ -39,6 +40,7 @@ impl<M> GradientsAccumulator<M> {
     }
 
     /// Return the accumulated gradients and reset the accumulator state.
+    #[tracing::instrument(skip_all)]
     pub fn grads(&mut self) -> GradientsParams {
         let mut grads = GradientsParams::new();
         core::mem::swap(&mut self.grads, &mut grads);

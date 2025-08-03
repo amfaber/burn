@@ -606,6 +606,7 @@ dependencies = [
  "reqwest",
  "serde",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -643,6 +644,7 @@ dependencies = [
  "serde_json",
  "spin",
  "thiserror 2.0.12",
+ "tracing",
  "uuid",
 ]
 
@@ -672,6 +674,7 @@ dependencies = [
  "serial_test",
  "spin",
  "text_placeholder",
+ "tracing",
 ]
 
 [[package]]
@@ -943,8 +946,10 @@ dependencies = [
  "serde",
  "sysinfo",
  "systemstat",
+ "tracing",
  "tracing-appender",
  "tracing-core",
+ "tracing-macro",
  "tracing-subscriber",
 ]
 
@@ -7770,6 +7775,13 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-macro"
+version = "0.18.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]

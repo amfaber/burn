@@ -4,6 +4,7 @@ use burn_core::{
     lr_scheduler::LrScheduler, module::AutodiffModule, optim::GradientsAccumulator,
     tensor::backend::Backend,
 };
+use tracing_macro::scope;
 use std::sync::Arc;
 
 use crate::metric::processor::{Event, EventProcessor, LearnerItem};
@@ -34,6 +35,7 @@ impl<B: Backend, VI> ValidEpoch<B, VI> {
     ///
     /// * `model` - The model to validate.
     /// * `processor` - The event processor to use.
+    #[tracing::instrument(skip_all)]
     pub fn run<LC: LearnerComponents, VO>(
         &self,
         model: &LC::Model,
@@ -88,6 +90,7 @@ impl<B: AutodiffBackend, TI> TrainEpoch<B, TI> {
     /// # Returns
     ///
     /// The trained model and the optimizer.
+    #[tracing::instrument(skip_all)]
     pub fn run<LC: LearnerComponents<Backend = B>, TO>(
         &mut self,
         mut model: LC::Model,
@@ -103,26 +106,26 @@ impl<B: AutodiffBackend, TI> TrainEpoch<B, TI> {
         log::info!("Executing training step for epoch {}", self.epoch,);
 
         // Single device / dataloader
-        let mut iterator = self.dataloader[0].iter();
+        let mut iterator = scope!("get dataloader", self.dataloader[0].iter());
         let mut iteration = 0;
-        let mut accumulator = GradientsAccumulator::new();
+        let mut accumulator = scope!("new acc", GradientsAccumulator::new());
         let mut accumulation_current = 0;
 
-        while let Some(item) = iterator.next() {
+        while let Some(item) = scope!("iter.next", iterator.next()) {
             iteration += 1;
             let lr = scheduler.step();
             log::info!("Iteration {iteration}");
 
-            let progress = iterator.progress();
+            let progress = scope!("progress", iterator.progress());
             let item = model.step(item);
 
             match self.grad_accumulation {
                 Some(accumulation) => {
-                    accumulator.accumulate(&model, item.grads);
+                    scope!("accumulate", accumulator.accumulate(&model, item.grads));
                     accumulation_current += 1;
 
                     if accumulation <= accumulation_current {
-                        let grads = accumulator.grads();
+                        let grads = scope!("grads", accumulator.grads());
                         model = model.optimize(&mut optim, lr, grads);
                         accumulation_current = 0;
                     }
@@ -130,23 +133,23 @@ impl<B: AutodiffBackend, TI> TrainEpoch<B, TI> {
                 None => model = model.optimize(&mut optim, lr, item.grads),
             }
 
-            let item = LearnerItem::new(
+            let item = scope!("new learner item", LearnerItem::new(
                 item.item,
                 progress,
                 self.epoch,
                 self.epoch_total,
                 iteration,
                 Some(lr),
-            );
+            ));
 
-            processor.process_train(Event::ProcessedItem(item));
+            scope!("process train 1", processor.process_train(Event::ProcessedItem(item)));
 
             if interrupter.should_stop() {
                 log::info!("Training interrupted.");
                 break;
             }
         }
-        processor.process_train(Event::EndEpoch(self.epoch));
+        scope!("process train 2", processor.process_train(Event::EndEpoch(self.epoch)));
 
         self.epoch += 1;
 

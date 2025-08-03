@@ -39,6 +39,7 @@ pub(crate) struct LearnerCheckpointer<LC: LearnerComponents> {
 }
 
 impl<LC: LearnerComponents> LearnerCheckpointer<LC> {
+    #[tracing::instrument(skip_all)]
     pub(crate) fn checkpoint(
         &mut self,
         model: &LC::Model,

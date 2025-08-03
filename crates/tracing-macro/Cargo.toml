@@ -1,0 +1,12 @@
+[package]
+name = "tracing-macro"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+version.workspace = true
+
+[dependencies]
+tracing.workspace = true
+
+[lints]
+workspace = true

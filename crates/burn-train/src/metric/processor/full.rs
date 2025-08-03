@@ -1,3 +1,5 @@
+use tracing_macro::scope;
+
 use super::{Event, EventProcessor, ItemLazy, Metrics};
 use crate::metric::store::EventStoreClient;
 use crate::renderer::{MetricState, MetricsRenderer};
@@ -30,10 +32,12 @@ impl<T: ItemLazy, V: ItemLazy> EventProcessor for FullEventProcessor<T, V> {
     type ItemTrain = T;
     type ItemValid = V;
 
+    #[tracing::instrument(skip_all)]
     fn process_train(&mut self, event: Event<Self::ItemTrain>) {
+        
         match event {
             Event::ProcessedItem(item) => {
-                let item = item.sync();
+                let item = scope!("sync item", item.sync());
                 let progress = (&item).into();
                 let metadata = (&item).into();
 
