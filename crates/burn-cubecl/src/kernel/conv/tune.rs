@@ -30,7 +30,7 @@ pub fn conv_autotune<R: CubeRuntime, E: FloatElement, const N: usize>(
         TunableSet::new(create_key::<R, E, N>, create_conv_input::<R, E, N>)
             .with(Tunable::new(conv_direct::<R, E, N>))
             .with(Tunable::new(conv_im2col_1x1::<R, E, N>))
-            .with(Tunable::new(conv_im2col::<R, E, N>))
+            // .with(Tunable::new(conv_im2col::<R, E, N>))
             .with(Tunable::new(conv_gemm_cyclic::<R, E, N>))
             .with(Tunable::new(conv_gemm_tma::<R, E, N>))
             .with(Tunable::new(conv_gemm_tma_multi_stage::<R, E, N>))
