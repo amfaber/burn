@@ -8,6 +8,7 @@ use crate::{
     quantization::QTensorPrimitive,
 };
 
+/// A dummy backend used for typesystem shenanigans
 #[derive(Clone, Debug, Default)]
 pub struct DummyBackend;
 
@@ -67,6 +68,7 @@ impl Backend for DummyBackend {
     }
 }
 
+#[allow(unused_variables)]
 impl FloatTensorOps<DummyBackend> for DummyBackend {
     fn float_from_data(
         data: crate::TensorData,
@@ -491,6 +493,7 @@ impl FloatTensorOps<DummyBackend> for DummyBackend {
 
 impl TransactionOps<DummyBackend> for DummyBackend {}
 
+#[allow(unused_variables)]
 impl QTensorOps<DummyBackend> for DummyBackend {
     fn q_from_data(
         data: crate::TensorData,
@@ -584,6 +587,7 @@ impl QTensorOps<DummyBackend> for DummyBackend {
 
 impl ActivationOps<DummyBackend> for DummyBackend {}
 
+#[allow(unused_variables)]
 impl BoolTensorOps<DummyBackend> for DummyBackend {
     fn bool_empty(
         shape: crate::Shape,
@@ -721,6 +725,7 @@ impl BoolTensorOps<DummyBackend> for DummyBackend {
     }
 }
 
+#[allow(unused_variables)]
 impl ModuleOps<DummyBackend> for DummyBackend {
     fn conv2d(
         x: crate::ops::FloatTensor<DummyBackend>,
@@ -866,6 +871,7 @@ impl ModuleOps<DummyBackend> for DummyBackend {
     }
 }
 
+#[allow(unused_variables)]
 impl IntTensorOps<DummyBackend> for DummyBackend {
     fn int_empty(
         shape: crate::Shape,
