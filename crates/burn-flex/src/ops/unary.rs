@@ -55,8 +55,8 @@ where
 /// Apply a unary operation element-wise to a tensor.
 pub fn unary_op<F32Op, F64Op>(tensor: FlexTensor, f32_op: F32Op, f64_op: F64Op) -> FlexTensor
 where
-    F32Op: Fn(f32) -> f32 + Copy,
-    F64Op: Fn(f64) -> f64 + Copy,
+    F32Op: Fn(f32) -> f32 + Copy + Sync + Send,
+    F64Op: Fn(f64) -> f64 + Copy + Sync + Send,
 {
     let dtype = tensor.dtype();
 
@@ -73,7 +73,7 @@ where
 fn unary_op_typed<E, Op>(mut tensor: FlexTensor, op: Op) -> FlexTensor
 where
     E: burn_backend::Element + bytemuck::Pod,
-    Op: Fn(E) -> E,
+    Op: Fn(E) -> E + Sync + Send,
 {
     let n = tensor.layout().num_elements();
 
@@ -81,9 +81,7 @@ where
     if tensor.is_unique() && tensor.layout().is_contiguous() && tensor.layout().start_offset() == 0
     {
         let storage: &mut [E] = tensor.storage_mut();
-        for x in storage[..n].iter_mut() {
-            *x = op(*x);
-        }
+        crate::parallel::for_each_mut(&mut storage[..n], |x| *x = op(*x));
         return tensor;
     }
 
@@ -98,7 +96,7 @@ where
     // Iterate in storage order (contiguous) and preserve original layout.
     // Only valid when all strides are positive.
     if !has_negative_strides && layout.start_offset() == 0 && src.len() == n {
-        let result: Vec<E> = src.iter().map(|&x| op(x)).collect();
+        let result: Vec<E> = crate::parallel::map(src, |&x| op(x));
         let bytes = Bytes::from_elems(result);
         return FlexTensor::new(bytes, layout, E::dtype());
     }
@@ -121,7 +119,7 @@ where
     let result = match &blocks {
         // Single contiguous block (with offset)
         StridedBlocks::Single { start, len } => {
-            src[*start..*start + *len].iter().map(|&x| op(x)).collect()
+            crate::parallel::map(&src[*start..*start + *len], |&x| op(x))
         }
         // Strided: iterate over contiguous blocks
         StridedBlocks::Multiple {

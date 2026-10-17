@@ -31,6 +31,7 @@ compile_error!(
 
 mod backend;
 mod layout;
+mod parallel;
 mod qtensor;
 mod quant_codes;
 mod strided_index;

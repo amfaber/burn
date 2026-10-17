@@ -26,15 +26,11 @@ pub(crate) const PARALLEL_THRESHOLD: usize = 256 * 1024;
 /// - The pointer remains valid for the lifetime of all uses
 /// - No two threads write to the same offset
 /// - No references to the underlying data exist during writes
-#[cfg(feature = "rayon")]
 pub(crate) struct SendMutPtr<T>(*mut T);
 
-#[cfg(feature = "rayon")]
 unsafe impl<T> Send for SendMutPtr<T> {}
-#[cfg(feature = "rayon")]
 unsafe impl<T> Sync for SendMutPtr<T> {}
 
-#[cfg(feature = "rayon")]
 impl<T> SendMutPtr<T> {
     pub(crate) fn new(ptr: *mut T) -> Self {
         Self(ptr)

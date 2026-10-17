@@ -78,6 +78,78 @@ impl ZipNest {
         self.lhs_offset == 0 && self.lhs_is_dense()
     }
 
+    /// Number of innermost runs: the product of the outer dims.
+    fn num_runs(&self) -> usize {
+        self.shape[..self.ndim - 1].iter().product()
+    }
+
+    /// Call `f(run, lhs_base, rhs_base)` for runs `first..first + count`, in row-major order.
+    /// Like [`ZipNest::for_each_run`], but starting anywhere, so that ranges of runs can be
+    /// handed to different threads. Must not be called when `ndim == 0`.
+    fn for_each_run_in(&self, first: usize, count: usize, mut f: impl FnMut(usize, usize, usize)) {
+        if count == 0 {
+            return;
+        }
+        let outer = self.ndim - 1;
+        // Unravel `first` into the outer index and the bases it starts from.
+        let mut idx = [0usize; ZIP_MAX_RANK];
+        let mut rest = first;
+        let mut lhs_base = self.lhs_offset as isize;
+        let mut rhs_base = self.rhs_offset as isize;
+        for d in (0..outer).rev() {
+            idx[d] = rest % self.shape[d];
+            rest /= self.shape[d];
+            lhs_base += idx[d] as isize * self.lhs_strides[d];
+            rhs_base += idx[d] as isize * self.rhs_strides[d];
+        }
+        for run in first..first + count {
+            f(run, lhs_base as usize, rhs_base as usize);
+            let mut d = outer;
+            while d > 0 {
+                d -= 1;
+                idx[d] += 1;
+                lhs_base += self.lhs_strides[d];
+                rhs_base += self.rhs_strides[d];
+                if idx[d] < self.shape[d] {
+                    break;
+                }
+                idx[d] = 0;
+                lhs_base -= (self.shape[d] as isize) * self.lhs_strides[d];
+                rhs_base -= (self.shape[d] as isize) * self.rhs_strides[d];
+            }
+        }
+    }
+
+    /// Call `f(out_start, lhs_base, rhs_base, len)` for every piece of every run, splitting the
+    /// work across threads: short runs are grouped into tasks, long runs are cut into pieces of
+    /// at most `CHUNK` elements, so a tensor that collapses to a single run is split as well.
+    /// `out_start` is the piece's position in row-major output order.
+    fn for_each_piece_par(&self, f: impl Fn(usize, usize, usize, usize) + Sync + Send) {
+        let (len, l_st, r_st) = self.inner();
+        let chunk = crate::parallel::CHUNK;
+        if len <= chunk {
+            let runs_per_task = chunk.div_ceil(len);
+            crate::parallel::for_ranges(self.num_runs(), runs_per_task, |first, count| {
+                self.for_each_run_in(first, count, |run, lb, rb| f(run * len, lb, rb, len))
+            });
+        } else {
+            let pieces_per_run = len.div_ceil(chunk);
+            crate::parallel::for_each_index(self.num_runs() * pieces_per_run, |piece| {
+                let (run, p) = (piece / pieces_per_run, piece % pieces_per_run);
+                let offset = p * chunk;
+                let piece_len = chunk.min(len - offset);
+                self.for_each_run_in(run, 1, |_, lb, rb| {
+                    f(
+                        run * len + offset,
+                        (lb as isize + offset as isize * l_st) as usize,
+                        (rb as isize + offset as isize * r_st) as usize,
+                        piece_len,
+                    )
+                });
+            });
+        }
+    }
+
     /// Call `f(lhs_base, rhs_base)` once per innermost run, in
     /// row-major output order. The bases are storage indices of the
     /// first element of the run; offsets advance by stride addition,
@@ -200,15 +272,19 @@ pub(crate) fn zip_map<L, R, Out, F>(
     op: F,
 ) -> Option<Vec<Out>>
 where
-    L: Copy,
-    R: Copy,
-    F: Fn(L, R) -> Out,
+    L: Copy + Sync,
+    R: Copy + Sync,
+    Out: Send,
+    F: Fn(L, R) -> Out + Sync + Send,
 {
     let numel = lhs_layout.num_elements();
     if numel == 0 {
         return Some(Vec::new());
     }
     let nest = collapse_for_zip(lhs_layout, rhs_layout)?;
+    if nest.ndim > 0 && crate::parallel::worth_splitting(numel) {
+        return Some(zip_map_par(&nest, numel, lhs, rhs, op));
+    }
 
     let mut out: Vec<Out> = Vec::with_capacity(numel);
     if nest.ndim == 0 {
@@ -245,6 +321,55 @@ where
     Some(out)
 }
 
+/// [`zip_map`] with the runs split across threads; each run writes its own span of the output.
+fn zip_map_par<L, R, Out, F>(nest: &ZipNest, numel: usize, lhs: &[L], rhs: &[R], op: F) -> Vec<Out>
+where
+    L: Copy + Sync,
+    R: Copy + Sync,
+    Out: Send,
+    F: Fn(L, R) -> Out + Sync + Send,
+{
+    let (_, l_st, r_st) = nest.inner();
+    let mut out: Vec<Out> = Vec::with_capacity(numel);
+    let dst = crate::ops::SendMutPtr::new(out.spare_capacity_mut().as_mut_ptr());
+    nest.for_each_piece_par(|start, lb, rb, len| {
+        // SAFETY: each piece owns output elements `start..start + len`, which are in the
+        // allocation and written by no other piece.
+        let out = unsafe { core::slice::from_raw_parts_mut(dst.ptr_add(start), len) };
+        match (l_st, r_st) {
+            (1, 1) => {
+                for ((o, &a), &b) in out
+                    .iter_mut()
+                    .zip(&lhs[lb..lb + len])
+                    .zip(&rhs[rb..rb + len])
+                {
+                    o.write(op(a, b));
+                }
+            }
+            (1, 0) => {
+                let b = rhs[rb];
+                for (o, &a) in out.iter_mut().zip(&lhs[lb..lb + len]) {
+                    o.write(op(a, b));
+                }
+            }
+            (0, 1) => {
+                let a = lhs[lb];
+                for (o, &b) in out.iter_mut().zip(&rhs[rb..rb + len]) {
+                    o.write(op(a, b));
+                }
+            }
+            _ => {
+                for (i, o) in out.iter_mut().enumerate() {
+                    o.write(op(lhs[lb + i * l_st as usize], rhs[rb + i * r_st as usize]));
+                }
+            }
+        }
+    });
+    // SAFETY: the runs together wrote every element of `..numel`.
+    unsafe { out.set_len(numel) };
+    out
+}
+
 /// Apply `op` over a collapsed nest *in place*, writing the result back
 /// into the lhs buffer instead of allocating an output.
 ///
@@ -262,9 +387,9 @@ where
 /// strided — and monomorphized per call site so LLVM autovectorizes it.
 pub(crate) fn zip_apply_inplace<D, S, F>(nest: &ZipNest, dst: &mut [D], src: &[S], op: F)
 where
-    D: Copy,
-    S: Copy,
-    F: Fn(D, S) -> D,
+    D: Copy + Send,
+    S: Copy + Sync,
+    F: Fn(D, S) -> D + Sync + Send,
 {
     debug_assert!(
         nest.lhs_is_dense(),
@@ -282,6 +407,32 @@ where
 
     let (len, l_st, r_st) = nest.inner();
     debug_assert_eq!(l_st, 1, "dense destination implies a contiguous inner run");
+    if crate::parallel::worth_splitting(nest.num_runs() * len) {
+        let dst = crate::ops::SendMutPtr::new(dst.as_mut_ptr());
+        nest.for_each_piece_par(|_, lb, rb, len| {
+            // SAFETY: the destination is dense, so each piece's span is its own.
+            let d = unsafe { core::slice::from_raw_parts_mut(dst.ptr_add(lb), len) };
+            match r_st {
+                1 => {
+                    for (d, &s) in d.iter_mut().zip(&src[rb..rb + len]) {
+                        *d = op(*d, s);
+                    }
+                }
+                0 => {
+                    let s = src[rb];
+                    for d in d.iter_mut() {
+                        *d = op(*d, s);
+                    }
+                }
+                _ => {
+                    for (i, d) in d.iter_mut().enumerate() {
+                        *d = op(*d, src[rb + i * r_st as usize]);
+                    }
+                }
+            }
+        });
+        return;
+    }
     match r_st {
         1 => nest.for_each_run(|lb, rb| {
             for (d, &s) in dst[lb..lb + len].iter_mut().zip(&src[rb..rb + len]) {
@@ -684,12 +835,12 @@ mod tests {
 
     /// Run `zip_apply_inplace` over `dst`, given that `dst_layout` is
     /// the dense side. Returns `None` if the nest declines the pair.
-    fn apply_inplace<E: Copy>(
+    fn apply_inplace<E: Copy + Send + Sync>(
         dst: &mut [E],
         dst_layout: &Layout,
         src: &[E],
         src_layout: &Layout,
-        op: impl Fn(E, E) -> E,
+        op: impl Fn(E, E) -> E + Sync + Send,
     ) -> Option<()> {
         let nest = collapse_for_zip(dst_layout, src_layout)?;
         if !nest.lhs_is_dense_from_zero() {

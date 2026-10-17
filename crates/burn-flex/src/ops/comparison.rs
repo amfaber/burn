@@ -27,8 +27,8 @@ pub fn compare<F32Cmp, F64Cmp>(
     simd_hint: Option<CompareOp>,
 ) -> FlexTensor
 where
-    F32Cmp: Fn(f32, f32) -> bool + Copy,
-    F64Cmp: Fn(f64, f64) -> bool + Copy,
+    F32Cmp: Fn(f32, f32) -> bool + Copy + Sync + Send,
+    F64Cmp: Fn(f64, f64) -> bool + Copy + Sync + Send,
 {
     debug_assert_eq!(lhs.dtype(), rhs.dtype(), "compare: dtype mismatch");
 
@@ -60,7 +60,7 @@ fn compare_f32<Cmp>(
     simd_hint: Option<CompareOp>,
 ) -> FlexTensor
 where
-    Cmp: Fn(f32, f32) -> bool,
+    Cmp: Fn(f32, f32) -> bool + Sync + Send,
 {
     // SIMD fast path: both tensors contiguous
     if let (Some((l_start, l_end)), Some((r_start, r_end))) = (
@@ -182,7 +182,7 @@ fn compare_f32<Cmp>(
     _simd_hint: Option<CompareOp>,
 ) -> FlexTensor
 where
-    Cmp: Fn(f32, f32) -> bool,
+    Cmp: Fn(f32, f32) -> bool + Sync + Send,
 {
     compare_typed(lhs, rhs, out_dtype, cmp)
 }
@@ -198,8 +198,8 @@ pub fn compare_elem<F32Cmp, F64Cmp>(
     simd_hint: Option<CompareOp>,
 ) -> FlexTensor
 where
-    F32Cmp: Fn(f32, f32) -> bool + Copy,
-    F64Cmp: Fn(f64, f64) -> bool + Copy,
+    F32Cmp: Fn(f32, f32) -> bool + Copy + Sync + Send,
+    F64Cmp: Fn(f64, f64) -> bool + Copy + Sync + Send,
 {
     let dtype = lhs.dtype();
 
@@ -232,7 +232,7 @@ fn compare_elem_f32<Cmp>(
     simd_hint: Option<CompareOp>,
 ) -> FlexTensor
 where
-    Cmp: Fn(f32, f32) -> bool,
+    Cmp: Fn(f32, f32) -> bool + Sync + Send,
 {
     // SIMD fast path: tensor is contiguous
     if let Some((start, end)) = lhs.layout().contiguous_offsets()
@@ -262,7 +262,7 @@ fn compare_elem_f32<Cmp>(
     _simd_hint: Option<CompareOp>,
 ) -> FlexTensor
 where
-    Cmp: Fn(f32, f32) -> bool,
+    Cmp: Fn(f32, f32) -> bool + Sync + Send,
 {
     compare_elem_typed(lhs, rhs, out_dtype, cmp)
 }
@@ -275,7 +275,7 @@ fn compare_typed<E, Cmp>(
 ) -> FlexTensor
 where
     E: Element + Pod,
-    Cmp: Fn(E, E) -> bool,
+    Cmp: Fn(E, E) -> bool + Sync + Send,
 {
     let shape = lhs.layout().shape().clone();
     let lhs_storage: &[E] = lhs.storage();
@@ -331,7 +331,7 @@ where
 fn compare_elem_typed<E, Cmp>(lhs: FlexTensor, rhs: E, out_dtype: BoolDType, cmp: Cmp) -> FlexTensor
 where
     E: Element + Pod + Copy,
-    Cmp: Fn(E, E) -> bool,
+    Cmp: Fn(E, E) -> bool + Sync + Send,
 {
     let shape = lhs.layout().shape().clone();
     let lhs_storage: &[E] = lhs.storage();
@@ -513,8 +513,8 @@ fn compare_int<I64Cmp, U64Cmp>(
     u64_cmp: U64Cmp,
 ) -> FlexTensor
 where
-    I64Cmp: Fn(i64, i64) -> bool,
-    U64Cmp: Fn(u64, u64) -> bool,
+    I64Cmp: Fn(i64, i64) -> bool + Sync + Send,
+    U64Cmp: Fn(u64, u64) -> bool + Sync + Send,
 {
     let (lhs, rhs) = crate::ops::expand::broadcast_binary(lhs, rhs);
 
@@ -552,8 +552,8 @@ fn compare_int_elem<I64Cmp, U64Cmp>(
     u64_cmp: U64Cmp,
 ) -> FlexTensor
 where
-    I64Cmp: Fn(i64, i64) -> bool,
-    U64Cmp: Fn(u64, u64) -> bool,
+    I64Cmp: Fn(i64, i64) -> bool + Sync + Send,
+    U64Cmp: Fn(u64, u64) -> bool + Sync + Send,
 {
     match lhs.dtype() {
         DType::I64 => compare_elem_typed(lhs, i64_rhs, out_dtype, i64_cmp),

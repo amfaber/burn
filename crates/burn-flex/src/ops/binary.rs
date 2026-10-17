@@ -35,8 +35,8 @@ pub fn binary_op<F32Op, F64Op>(
     simd_hint: Option<BinaryOp>,
 ) -> FlexTensor
 where
-    F32Op: Fn(f32, f32) -> f32 + Copy,
-    F64Op: Fn(f64, f64) -> f64 + Copy,
+    F32Op: Fn(f32, f32) -> f32 + Copy + Sync + Send,
+    F64Op: Fn(f64, f64) -> f64 + Copy + Sync + Send,
 {
     debug_assert_eq!(lhs.dtype(), rhs.dtype(), "binary_op: dtype mismatch");
 
@@ -115,7 +115,7 @@ fn binary_op_f32<Op>(
     simd_hint: Option<BinaryOp>,
 ) -> FlexTensor
 where
-    Op: Fn(f32, f32) -> f32,
+    Op: Fn(f32, f32) -> f32 + Sync + Send,
 {
     // In-place SIMD fast path: lhs unique contiguous at offset 0, rhs
     // contiguous (no broadcast).
@@ -186,7 +186,7 @@ fn binary_op_f32<Op>(
     _simd_hint: Option<BinaryOp>,
 ) -> FlexTensor
 where
-    Op: Fn(f32, f32) -> f32,
+    Op: Fn(f32, f32) -> f32 + Sync + Send,
 {
     binary_op_typed(lhs, rhs, op)
 }
@@ -195,7 +195,7 @@ where
 pub(crate) fn binary_op_typed<E, Op>(mut lhs: FlexTensor, mut rhs: FlexTensor, op: Op) -> FlexTensor
 where
     E: Element + bytemuck::Pod,
-    Op: Fn(E, E) -> E,
+    Op: Fn(E, E) -> E + Sync + Send,
 {
     // In-place fast path: lhs unique, contiguous at offset 0, rhs contiguous
     if lhs.is_unique()
@@ -299,7 +299,7 @@ pub(crate) fn apply_2d_strided<E, R, Op>(
 ) -> Vec<R>
 where
     E: Copy,
-    Op: Fn(E, E) -> R,
+    Op: Fn(E, E) -> R + Sync + Send,
 {
     let (rows, cols, l_row_stride, l_col_stride) = lhs_layout.as_2d_strides().unwrap();
     let (_, _, r_row_stride, r_col_stride) = rhs_layout.as_2d_strides().unwrap();
@@ -331,8 +331,8 @@ pub fn scalar_op<F32Op, F64Op>(
     f64_op: F64Op,
 ) -> FlexTensor
 where
-    F32Op: Fn(f32, f32) -> f32 + Copy,
-    F64Op: Fn(f64, f64) -> f64 + Copy,
+    F32Op: Fn(f32, f32) -> f32 + Copy + Sync + Send,
+    F64Op: Fn(f64, f64) -> f64 + Copy + Sync + Send,
 {
     let dtype = tensor.dtype();
 
@@ -360,16 +360,14 @@ where
 pub(crate) fn scalar_op_typed<E, Op>(mut tensor: FlexTensor, scalar: E, op: Op) -> FlexTensor
 where
     E: Element + bytemuck::Pod,
-    Op: Fn(E, E) -> E,
+    Op: Fn(E, E) -> E + Sync + Send,
 {
     // In-place fast path: unique, contiguous at offset 0
     if tensor.is_unique()
         && let Some((0, end)) = tensor.layout().contiguous_offsets()
     {
         let storage: &mut [E] = tensor.storage_mut();
-        for x in storage[..end].iter_mut() {
-            *x = op(*x, scalar);
-        }
+        crate::parallel::for_each_mut(&mut storage[..end], |x| *x = op(*x, scalar));
         return tensor;
     }
 
@@ -379,7 +377,7 @@ where
     let storage: &[E] = tensor.storage();
 
     let result: Vec<E> = match tensor.layout().contiguous_offsets() {
-        Some((start, end)) => storage[start..end].iter().map(|&x| op(x, scalar)).collect(),
+        Some((start, end)) => crate::parallel::map(&storage[start..end], |&x| op(x, scalar)),
         None => StridedIter::new(tensor.layout())
             .map(|i| op(storage[i], scalar))
             .collect(),
@@ -404,7 +402,7 @@ fn make_tensor<E: bytemuck::Pod + Send + Sync>(
 /// Supports all integer dtypes: I64, I32, I16, I8, U64, U32, U16, U8.
 pub fn int_binary_op<Op>(lhs: FlexTensor, rhs: FlexTensor, op: Op) -> FlexTensor
 where
-    Op: Fn(i64, i64) -> i64 + Copy,
+    Op: Fn(i64, i64) -> i64 + Copy + Sync + Send,
 {
     debug_assert_eq!(lhs.dtype(), rhs.dtype(), "int_binary_op: dtype mismatch");
 
@@ -432,7 +430,7 @@ where
 /// Note: scalar is truncated to target dtype (matches PyTorch).
 pub fn int_scalar_op<Op>(tensor: FlexTensor, scalar: i64, op: Op) -> FlexTensor
 where
-    Op: Fn(i64, i64) -> i64 + Copy,
+    Op: Fn(i64, i64) -> i64 + Copy + Sync + Send,
 {
     let dtype = tensor.dtype();
 
