@@ -56,7 +56,7 @@ macro_rules! conv3d_1x1_typed {
 /// Generates a conv3d typed function with 1x1, depthwise, small-channel, and
 /// direct fast-path checks.
 macro_rules! conv3d_typed {
-    ($fn_name:ident, $T:ty, $dtype:expr, $zero:expr, $gemm_fn:ident, $fn_1x1:ident, $fn_depthwise:ident, $fn_small_channel:ident $(, $fn_direct:ident)?) => {
+    ($fn_name:ident, $T:ty, $dtype:expr, $zero:expr, $gemm_fn:ident, $fn_1x1:ident, $fn_depthwise:ident, $fn_small_channel:ident $(, $fn_direct:ident)? $(; $fn_blocked:path)?) => {
         pub fn $fn_name(
             x: FlexTensor,
             weight: FlexTensor,
@@ -71,6 +71,12 @@ macro_rules! conv3d_typed {
             if should_use_depthwise_conv(x_shape, w_shape, options) {
                 return $fn_depthwise(x, weight, bias, options);
             }
+            $(
+                #[cfg(feature = "simd")]
+                if crate::ops::conv_direct::applies(x_shape, &weight, options) {
+                    return $fn_blocked(x, weight, bias, options);
+                }
+            )?
             if should_use_small_channel_conv(x_shape, w_shape, options) {
                 return $fn_small_channel(x, weight, bias, options);
             }
@@ -203,7 +209,8 @@ conv3d_typed!(
     conv3d_1x1_f32,
     conv3d_depthwise_f32,
     conv3d_small_channel_f32,
-    conv3d_direct_f32
+    conv3d_direct_f32;
+    crate::ops::conv_direct::conv2d_direct_f32
 );
 conv3d_typed!(
     conv3d_f64,

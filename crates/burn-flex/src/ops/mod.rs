@@ -96,6 +96,8 @@ mod conv_common;
 mod batch_norm;
 pub mod conv;
 mod conv_backward;
+#[cfg(feature = "simd")]
+mod conv_direct;
 pub mod conv_transpose;
 pub mod cumulative;
 pub mod deform_conv;
