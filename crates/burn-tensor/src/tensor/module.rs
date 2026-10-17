@@ -1380,6 +1380,21 @@ pub fn attention_fallback(
     ))
 }
 
+/// Calculate the [2D convolution](burn_backend::ops::ModuleOps::conv2d) backward pass, returning the gradient for `x`.
+pub fn conv2d_x_backward(
+    x: Tensor<4>,
+    weight: Tensor<4>,
+    output_grad: Tensor<4>,
+    options: ConvOptions<2>,
+) -> Tensor<4> {
+    Tensor::new(BridgeTensor::float(Dispatch::conv2d_x_backward(
+        x.primitive.into_float(),
+        weight.primitive.into_float(),
+        output_grad.primitive.into_float(),
+        options,
+    )))
+}
+
 /// Calculate the [2D convolution](burn_backend::ops::ModuleOps::conv2d) backward pass, returning the gradient for `weight`.
 pub fn conv2d_weight_backward(
     x: Tensor<4>,
