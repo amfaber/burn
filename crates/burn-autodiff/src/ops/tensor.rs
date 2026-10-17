@@ -2715,10 +2715,10 @@ impl<B: Backend, C: CheckpointStrategy> FloatTensorOps<Self> for Autodiff<B, C> 
                 _checkpointer: &mut Checkpointer,
             ) {
                 unary::<B, _>(ops.parents, ops.node, grads, |grad| {
-                    let val = B::float_ones(ops.state, &grad.device(), grad.dtype().into());
-
-                    let grad = unsqueeze_like::<B>(grad, val.shape());
-                    B::float_mul(val, grad)
+                    // Every element gets the sum's gradient: a broadcast of it, which a backend
+                    // can give as a view rather than a filled tensor times the gradient.
+                    let grad = unsqueeze_like::<B>(grad, ops.state.clone());
+                    B::float_expand(grad, ops.state)
                 });
             }
         }
