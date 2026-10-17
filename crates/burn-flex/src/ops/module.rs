@@ -2,7 +2,7 @@
 //!
 //! These operations power neural network modules like convolutions and pooling.
 
-use crate::ops::{conv, conv_transpose, deform_conv, interpolate, pool};
+use crate::ops::{conv, conv_backward, conv_transpose, deform_conv, interpolate, pool};
 use crate::{Flex, FlexTensor, Layout};
 use burn_backend::{
     DType, Element, TensorMetadata,
@@ -260,6 +260,60 @@ impl ModuleOps<Flex> for Flex {
             DType::BF16 => conv::conv3d_bf16(x, weight, bias, &options),
             dtype => panic!("conv3d: unsupported dtype {:?}", dtype),
         }
+    }
+
+    fn conv1d_x_backward(
+        x: FloatTensor<Flex>,
+        weight: FloatTensor<Flex>,
+        output_grad: FloatTensor<Flex>,
+        options: ConvOptions<1>,
+    ) -> FloatTensor<Flex> {
+        conv_backward::conv_x_backward(x, weight, output_grad, options)
+    }
+
+    fn conv1d_weight_backward(
+        x: FloatTensor<Flex>,
+        weight: FloatTensor<Flex>,
+        output_grad: FloatTensor<Flex>,
+        options: ConvOptions<1>,
+    ) -> FloatTensor<Flex> {
+        conv_backward::conv_weight_backward(x, weight, output_grad, options)
+    }
+
+    fn conv2d_x_backward(
+        x: FloatTensor<Flex>,
+        weight: FloatTensor<Flex>,
+        output_grad: FloatTensor<Flex>,
+        options: ConvOptions<2>,
+    ) -> FloatTensor<Flex> {
+        conv_backward::conv_x_backward(x, weight, output_grad, options)
+    }
+
+    fn conv2d_weight_backward(
+        x: FloatTensor<Flex>,
+        weight: FloatTensor<Flex>,
+        output_grad: FloatTensor<Flex>,
+        options: ConvOptions<2>,
+    ) -> FloatTensor<Flex> {
+        conv_backward::conv_weight_backward(x, weight, output_grad, options)
+    }
+
+    fn conv3d_x_backward(
+        x: FloatTensor<Flex>,
+        weight: FloatTensor<Flex>,
+        output_grad: FloatTensor<Flex>,
+        options: ConvOptions<3>,
+    ) -> FloatTensor<Flex> {
+        conv_backward::conv_x_backward(x, weight, output_grad, options)
+    }
+
+    fn conv3d_weight_backward(
+        x: FloatTensor<Flex>,
+        weight: FloatTensor<Flex>,
+        output_grad: FloatTensor<Flex>,
+        options: ConvOptions<3>,
+    ) -> FloatTensor<Flex> {
+        conv_backward::conv_weight_backward(x, weight, output_grad, options)
     }
 
     fn conv_transpose1d(

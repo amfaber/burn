@@ -94,6 +94,7 @@ pub mod comparison;
 #[macro_use]
 mod conv_common;
 pub mod conv;
+mod conv_backward;
 pub mod conv_transpose;
 pub mod cumulative;
 pub mod deform_conv;
@@ -108,7 +109,7 @@ mod int;
 pub mod interpolate;
 pub mod mask;
 pub mod matmul;
-mod module;
+pub(crate) mod module;
 pub mod pool;
 mod qtensor;
 pub mod reduce;
