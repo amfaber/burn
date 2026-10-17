@@ -47,6 +47,52 @@ fn powi_float<T: Float>(base: T, exponent: i32) -> T {
     }
 }
 
+/// Elements per independently seeded chunk of a random tensor.
+const RANDOM_CHUNK: usize = 1 << 16;
+
+/// A tensor of samples from `distribution`, generated in parallel.
+///
+/// Each chunk of `RANDOM_CHUNK` elements gets its own generator, seeded from `rng`, and one
+/// sampler for the whole chunk. Sampling element by element from one generator is
+/// single-threaded and sets up the distribution again for every element; for a dropout mask
+/// over large activations that took longer than the convolutions around it. The chunk size is
+/// fixed, so the same `rng` gives the same tensor on any number of threads.
+fn random_chunked<E>(
+    shape: Shape,
+    distribution: Distribution,
+    rng: &mut crate::backend::FlexRng,
+) -> TensorData
+where
+    E: burn_backend::Element + rand::distr::uniform::SampleUniform + Send,
+    rand::distr::StandardUniform: rand::distr::Distribution<E>,
+{
+    use rand::{RngExt, SeedableRng};
+    let n = shape.num_elements();
+    let seeds: alloc::vec::Vec<u64> = (0..n.div_ceil(RANDOM_CHUNK))
+        .map(|_| rng.random::<u64>())
+        .collect();
+    let mut data = alloc::vec![E::from_elem(0.0f32); n];
+    let fill = |(chunk, seed): (&mut [E], &u64)| {
+        let mut chunk_rng = crate::backend::FlexRng::seed_from_u64(*seed);
+        let mut sampler = distribution.sampler::<_, E>(&mut chunk_rng);
+        for v in chunk {
+            *v = sampler.sample();
+        }
+    };
+    #[cfg(feature = "rayon")]
+    {
+        use rayon::prelude::*;
+        data.par_chunks_mut(RANDOM_CHUNK)
+            .zip(seeds.par_iter())
+            .for_each(fill);
+    }
+    #[cfg(not(feature = "rayon"))]
+    data.chunks_mut(RANDOM_CHUNK)
+        .zip(seeds.iter())
+        .for_each(fill);
+    TensorData::new(data, shape)
+}
+
 impl FloatTensorOps<Flex> for Flex {
     fn float_from_data(data: TensorData, _device: &Device<Flex>) -> FloatTensor<Flex> {
         FlexTensor::from_data(data)
@@ -62,9 +108,9 @@ impl FloatTensorOps<Flex> for Flex {
         use burn_std::rand::SeedableRng;
         let mut rng = crate::backend::FlexRng::seed_from_u64(key.seed());
         let data = match dtype {
-            FloatDType::F64 => TensorData::random::<f64, _, _>(shape, distribution, &mut rng),
+            FloatDType::F64 => random_chunked::<f64>(shape, distribution, &mut rng),
             FloatDType::F32 | FloatDType::Flex32 => {
-                TensorData::random::<f32, _, _>(shape, distribution, &mut rng)
+                random_chunked::<f32>(shape, distribution, &mut rng)
             }
             FloatDType::F16 => TensorData::random::<f16, _, _>(shape, distribution, &mut rng),
             FloatDType::BF16 => TensorData::random::<bf16, _, _>(shape, distribution, &mut rng),
