@@ -2,15 +2,15 @@
 //!
 //! These operations power neural network modules like convolutions and pooling.
 
-use crate::ops::{conv, conv_backward, conv_transpose, deform_conv, interpolate, pool};
+use crate::ops::{batch_norm, conv, conv_backward, conv_transpose, deform_conv, interpolate, pool};
 use crate::{Flex, FlexTensor, Layout};
 use burn_backend::{
     DType, Element, TensorMetadata,
     ops::{
-        AttentionCache, AttentionModuleOptions, ConvOptions, ConvTransposeOptions,
-        DeformConv2dBackward, DeformConvOptions, FloatTensorOps, IntTensorOps, InterpolateMode,
-        InterpolateOptions, MaxPool2dBackward, MaxPool2dWithIndices, MaxPool3dBackward,
-        MaxPool3dWithIndices, ModuleOps, conv::pad_asymmetric_conv_input,
+        AttentionCache, AttentionModuleOptions, BatchNormTrain, BatchNormTrainBackward,
+        ConvOptions, ConvTransposeOptions, DeformConv2dBackward, DeformConvOptions, FloatTensorOps,
+        IntTensorOps, InterpolateMode, InterpolateOptions, MaxPool2dBackward, MaxPool2dWithIndices,
+        MaxPool3dBackward, MaxPool3dWithIndices, ModuleOps, conv::pad_asymmetric_conv_input,
     },
     tensor::{BoolTensor, FloatTensor, IntTensor},
 };
@@ -44,6 +44,40 @@ pub(crate) fn cast_from_f32<E: Element + Pod + Copy>(
 }
 
 impl ModuleOps<Flex> for Flex {
+    fn batch_norm(
+        x: FloatTensor<Flex>,
+        gamma: FloatTensor<Flex>,
+        beta: FloatTensor<Flex>,
+        mean: FloatTensor<Flex>,
+        variance: FloatTensor<Flex>,
+        epsilon: f64,
+    ) -> FloatTensor<Flex> {
+        batch_norm::batch_norm(x, gamma, beta, mean, variance, epsilon)
+    }
+
+    fn batch_norm_train(
+        x: FloatTensor<Flex>,
+        gamma: FloatTensor<Flex>,
+        beta: FloatTensor<Flex>,
+        epsilon: f64,
+    ) -> BatchNormTrain<Flex> {
+        let (output, mean, variance) = batch_norm::batch_norm_train(x, gamma, beta, epsilon);
+        BatchNormTrain::new(output, mean, variance)
+    }
+
+    fn batch_norm_train_backward(
+        x: FloatTensor<Flex>,
+        gamma: FloatTensor<Flex>,
+        mean: FloatTensor<Flex>,
+        variance: FloatTensor<Flex>,
+        epsilon: f64,
+        output_grad: FloatTensor<Flex>,
+    ) -> BatchNormTrainBackward<Flex> {
+        let (x_grad, gamma_grad, beta_grad) =
+            batch_norm::batch_norm_train_backward(x, gamma, mean, variance, epsilon, output_grad);
+        BatchNormTrainBackward::new(x_grad, gamma_grad, beta_grad)
+    }
+
     fn conv1d(
         x: FloatTensor<Flex>,
         weight: FloatTensor<Flex>,

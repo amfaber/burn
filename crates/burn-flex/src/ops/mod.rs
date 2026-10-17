@@ -93,6 +93,7 @@ mod collective;
 pub mod comparison;
 #[macro_use]
 mod conv_common;
+mod batch_norm;
 pub mod conv;
 mod conv_backward;
 pub mod conv_transpose;
