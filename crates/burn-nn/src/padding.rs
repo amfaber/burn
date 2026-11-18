@@ -49,7 +49,11 @@ impl PaddingConfig1d {
 }
 
 /// Padding configuration for 2D operators.
-#[derive(Config, Debug, PartialEq)]
+///
+/// It reads configs saved by burn 0.19 and earlier too, whose `Explicit` held the symmetric
+/// padding of the height and the width: `Explicit(h, w)` reads as `Explicit(h, w, h, w)`.
+#[derive(Debug, PartialEq, Clone, burn::serde::Serialize)]
+#[serde(crate = "burn::serde")]
 pub enum PaddingConfig2d {
     /// Dynamically calculates padding to preserve input dimensions in output.
     Same,
@@ -59,6 +63,48 @@ pub enum PaddingConfig2d {
     /// Format: (top, left, bottom, right)
     /// For symmetric padding, use matching values (e.g., `Explicit(1, 1, 1, 1)`).
     Explicit(usize, usize, usize, usize),
+}
+
+impl Config for PaddingConfig2d {}
+
+impl core::fmt::Display for PaddingConfig2d {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&burn::config::config_to_json(self))
+    }
+}
+
+impl<'de> burn::serde::Deserialize<'de> for PaddingConfig2d {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: burn::serde::Deserializer<'de>,
+    {
+        /// `Explicit`'s values as saved: the four sides, or the height's and the width's.
+        #[derive(burn::serde::Deserialize)]
+        #[serde(crate = "burn::serde", untagged)]
+        enum SavedExplicit {
+            Sides(usize, usize, usize, usize),
+            Symmetric(usize, usize),
+        }
+
+        #[derive(burn::serde::Deserialize)]
+        #[serde(crate = "burn::serde")]
+        enum Saved {
+            Same,
+            Valid,
+            Explicit(SavedExplicit),
+        }
+
+        Ok(match Saved::deserialize(deserializer)? {
+            Saved::Same => Self::Same,
+            Saved::Valid => Self::Valid,
+            Saved::Explicit(SavedExplicit::Sides(top, left, bottom, right)) => {
+                Self::Explicit(top, left, bottom, right)
+            }
+            Saved::Explicit(SavedExplicit::Symmetric(height, width)) => {
+                Self::Explicit(height, width, height, width)
+            }
+        })
+    }
 }
 
 impl PaddingConfig2d {
@@ -170,6 +216,27 @@ mod tests {
     }
 
     // ==================== PaddingConfig2d Tests ====================
+
+    /// A config saves and loads all four sides.
+    #[cfg(feature = "std")]
+    #[test]
+    fn padding_2d_explicit_round_trips() {
+        let padding = PaddingConfig2d::Explicit(1, 2, 3, 4);
+        let json = burn::config::config_to_json(&padding);
+        assert_eq!(
+            PaddingConfig2d::load_binary(json.as_bytes()).unwrap(),
+            padding
+        );
+    }
+
+    /// A config saved by burn 0.19, whose `Explicit` held the height's and the width's
+    /// symmetric padding, loads as that padding on all four sides.
+    #[cfg(feature = "std")]
+    #[test]
+    fn padding_2d_explicit_saved_by_burn_0_19_is_symmetric() {
+        let padding = PaddingConfig2d::load_binary(br#"{"Explicit":[1,2]}"#).unwrap();
+        assert_eq!(padding, PaddingConfig2d::Explicit(1, 2, 1, 2));
+    }
 
     #[test]
     fn test_padding_config_2d_calculate_pairs_valid() {
