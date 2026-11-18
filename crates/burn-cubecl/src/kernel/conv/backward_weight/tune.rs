@@ -18,6 +18,7 @@ use crate::{
             depthwise::wgrad_depthwise, fallback::conv_weight_backward_fallback, implicit_gemm::*,
             split_implicit::wgrad_split_implicit,
         },
+        forward::simt::conv_weight_backward_simt,
         im2col::{wgrad_im2col, wgrad_im2col_1x1, wgrad_im2col_1x1_split},
         unit::wgrad_unit,
     },
@@ -92,6 +93,13 @@ pub fn wgrad_autotune<const N: usize>(
             .with(Tunable::new(
                 "wgrad_im2col_1x1",
                 |(input, grad, shape, options)| wgrad_im2col_1x1::<N>(input, grad, shape, options),
+            ))
+            // The SIMT convolution's weight gradient; declines on CPU runtimes.
+            .with(Tunable::new(
+                "wgrad_simt",
+                |(input, out_grad, weight_shape, options)| {
+                    conv_weight_backward_simt::<N>(input, out_grad, weight_shape, options)
+                },
             ))
             // The weight gradient's matmul has `M = C_out`, `N = taps * C_in`
             // and `K = batch * output spatial` (split into intervals by

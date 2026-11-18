@@ -12,7 +12,10 @@ use crate::{
     CubeAutotuneKey, CubeTuneId,
     kernel::conv::{
         ConvAutotuneKey, conv_direct, conv_im2col, conv_im2col_1x1,
-        forward::depthwise::conv_depthwise, forward::implicit_gemm::*, unit::conv_unit,
+        forward::depthwise::conv_depthwise,
+        forward::implicit_gemm::*,
+        forward::simt::{SimtTiling, conv_simt},
+        unit::conv_unit,
     },
     tensor::CubeTensor,
 };
@@ -111,6 +114,28 @@ pub fn conv_autotune<const N: usize>(
             .with(Tunable::new(
                 "conv_im2col_gather",
                 |(input, weight, bias, options)| conv_im2col::<N>(input, weight, bias, options),
+            ))
+            // Implicit-gemm convolution on plain arithmetic, for GPUs without tensor cores for
+            // the dtype; declines on CPU runtimes. None of the three tilings wins everywhere:
+            // the split one where the tiles alone would leave the device idle, the wide one
+            // on large layers.
+            .with(Tunable::new(
+                "conv_simt",
+                |(input, weight, bias, options)| {
+                    conv_simt::<N>(input, weight, bias, options, SimtTiling::NARROW)
+                },
+            ))
+            .with(Tunable::new(
+                "conv_simt_split",
+                |(input, weight, bias, options)| {
+                    conv_simt::<N>(input, weight, bias, options, SimtTiling::NARROW_SPLIT)
+                },
+            ))
+            .with(Tunable::new(
+                "conv_simt_wide",
+                |(input, weight, bias, options)| {
+                    conv_simt::<N>(input, weight, bias, options, SimtTiling::WIDE)
+                },
             ))
             // One forced register tiling per matmul regime a dense forward lands
             // in: few output channels (narrow N), a moderate or wide output

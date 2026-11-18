@@ -15,6 +15,7 @@ use crate::{
             fallback::conv_data_backward_fallback, implicit_gemm::*,
             stride_phases::dgrad_stride_phases,
         },
+        forward::simt::{SimtTiling, conv_data_backward_simt},
         im2col::{dgrad_im2col, dgrad_im2col_1x1},
         unit::dgrad_unit,
     },
@@ -66,6 +67,44 @@ pub fn dgrad_autotune<const N: usize>(
                 "dgrad_im2col",
                 |(out_grad, weights, input_shape, options)| {
                     dgrad_im2col::<N>(out_grad, weights, input_shape, options)
+                },
+            ))
+            // The SIMT convolution's input gradient; declines on CPU runtimes and on strided
+            // convolutions.
+            .with(Tunable::new(
+                "dgrad_simt",
+                |(out_grad, weights, input_shape, options)| {
+                    conv_data_backward_simt::<N>(
+                        out_grad,
+                        weights,
+                        input_shape,
+                        options,
+                        SimtTiling::NARROW,
+                    )
+                },
+            ))
+            .with(Tunable::new(
+                "dgrad_simt_split",
+                |(out_grad, weights, input_shape, options)| {
+                    conv_data_backward_simt::<N>(
+                        out_grad,
+                        weights,
+                        input_shape,
+                        options,
+                        SimtTiling::NARROW_SPLIT,
+                    )
+                },
+            ))
+            .with(Tunable::new(
+                "dgrad_simt_wide",
+                |(out_grad, weights, input_shape, options)| {
+                    conv_data_backward_simt::<N>(
+                        out_grad,
+                        weights,
+                        input_shape,
+                        options,
+                        SimtTiling::WIDE,
+                    )
                 },
             ))
             // The data gradient's matmul has `N = C_in`, `M = batch * input
