@@ -155,3 +155,36 @@ fn struct_config_can_load_binary() {
     let config_loaded = TestStructConfig::load_binary(&binary).unwrap();
     assert_eq!(config, config_loaded);
 }
+
+#[derive(Config, Debug, PartialEq)]
+struct GrownConfig {
+    kernel: usize,
+    #[config(default = "kernel")]
+    stride: usize,
+    #[config(default = "Some(4)")]
+    limit: Option<usize>,
+}
+
+/// A config saved before a field with a default was added loads with that default, which may
+/// name another field as in `new`.
+#[test]
+fn struct_config_missing_default_field_takes_default() {
+    let config: GrownConfig = serde_json::from_str(r#"{"kernel": 3}"#).unwrap();
+    assert_eq!(config, GrownConfig::new(3));
+    assert_eq!(config.stride, 3);
+    assert_eq!(config.limit, Some(4));
+}
+
+/// A defaulted `Option` field saved as `None` stays `None` rather than taking its default.
+#[test]
+fn struct_config_saved_none_keeps_none() {
+    let config: GrownConfig =
+        serde_json::from_str(r#"{"kernel": 3, "stride": 1, "limit": null}"#).unwrap();
+    assert_eq!(config, GrownConfig::new(3).with_stride(1).with_limit(None));
+}
+
+/// A field without a default is still required.
+#[test]
+fn struct_config_missing_required_field_fails() {
+    assert!(serde_json::from_str::<GrownConfig>(r#"{"stride": 1}"#).is_err());
+}

@@ -3,6 +3,15 @@ use crate::shared::field::FieldTypeAnalyzer;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
+/// A field's default as an expression: a string literal holds the expression's tokens, and any
+/// other literal is the value itself.
+fn default_value(value: &syn::Lit) -> TokenStream {
+    match value {
+        syn::Lit::Str(value) => value.value().parse().unwrap(),
+        _ => quote! { #value },
+    }
+}
+
 pub struct ConfigStructAnalyzer {
     name: Ident,
     fields_required: Vec<FieldTypeAnalyzer>,
@@ -120,30 +129,65 @@ impl ConfigStructAnalyzer {
         }
     }
 
-    fn gen_deserialize_fn(
-        &self,
-        struct_name: &Ident,
-        struct_gen: &TokenStream,
-        names: &[FieldTypeAnalyzer],
-    ) -> TokenStream {
+    /// Deserializes through a mirror of the config in which a field with a default may be
+    /// missing, and then takes the default that `new` gives it. A config saved before such a field
+    /// was added still loads.
+    fn gen_deserialize_fn(&self, struct_name: &Ident) -> TokenStream {
         let name = &self.name;
-        let names = names.iter().map(|name| {
-            let name = name.ident();
-            quote! { #name: serde_state.#name }
-        });
+        let mut serde_fields = Vec::new();
+        let mut bindings = Vec::new();
+        let mut inits = Vec::new();
+
+        for field in self.fields_required.iter().chain(self.fields_option.iter()) {
+            let ident = field.ident();
+            let ty = &field.field.ty;
+            serde_fields.push(quote! { #ident: #ty });
+            // Bound first, so that defaults can name them as they do in `new`.
+            bindings.push(quote! { let #ident = serde_state.#ident; });
+            inits.push(quote! { #ident });
+        }
+
+        for (field, value) in self.fields_default.iter() {
+            let ident = field.ident();
+            let ty = &field.field.ty;
+            let value = default_value(value);
+            serde_fields.push(quote! {
+                #[serde(default, deserialize_with = "present")]
+                #ident: Option<#ty>
+            });
+            inits.push(quote! {
+                #ident: match serde_state.#ident {
+                    Some(value) => value,
+                    None => #value,
+                }
+            });
+        }
 
         quote! {
             impl<'de> burn::serde::Deserialize<'de> for #name {
                 fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
                 where
                     D: burn::serde::Deserializer<'de> {
+                    /// A field that is in the input, which `#[serde(default)]` tells apart from a
+                    /// missing one even when the field's own type is an `Option`.
+                    fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+                    where
+                        D: burn::serde::Deserializer<'de>,
+                        T: burn::serde::Deserialize<'de>,
+                    {
+                        T::deserialize(deserializer).map(Some)
+                    }
+
                     #[derive(burn::serde::Deserialize)]
                     #[serde(crate = "burn::serde")]
-                    #struct_gen
+                    struct #struct_name {
+                        #(#serde_fields),*
+                    }
 
                     let serde_state = #struct_name::deserialize(deserializer)?;
+                    #(#bindings)*
                     Ok(#name {
-                        #(#names),*
+                        #(#inits),*
                     })
                 }
             }
@@ -243,20 +287,10 @@ impl ConfigAnalyzer for ConfigStructAnalyzer {
             let name = field.ident();
             let docs = field.docs();
 
-            match value {
-                syn::Lit::Str(value) => {
-                    let stream: proc_macro2::TokenStream = value.value().parse().unwrap();
-
-                    body.extend(quote! {
-                        #name: #stream,
-                    });
-                }
-                _ => {
-                    body.extend(quote! {
-                        #name: #value,
-                    });
-                }
-            };
+            let value_expr = default_value(value);
+            body.extend(quote! {
+                #name: #value_expr,
+            });
             docs_header(&mut fn_docs, false, false, true);
             let default_doc = format!("- Defaults to `{}`", quote!(#value));
             let doc_str = format!("###### `{}`\n", quote!(#name));
@@ -344,7 +378,7 @@ impl ConfigAnalyzer for ConfigStructAnalyzer {
         let struct_gen = self.gen_serde_struct(&name_types);
 
         let serialize_gen = self.gen_serialize_fn(&struct_name, &struct_gen, &names);
-        let deserialize_gen = self.gen_deserialize_fn(&struct_name, &struct_gen, &names);
+        let deserialize_gen = self.gen_deserialize_fn(&struct_name);
 
         quote! {
             #serialize_gen
