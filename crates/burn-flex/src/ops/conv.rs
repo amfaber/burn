@@ -310,7 +310,7 @@ fn conv3d_impl<
             [pad_h, pad_w],
             [dilation_h, dilation_w],
             groups,
-            IM2COL_MAX_ELEMS,
+            im2col_tile_positions::<T>(channels_per_group * kernel_h * kernel_w),
         );
         return conv_output(
             output,
@@ -579,15 +579,31 @@ fn conv_output<
     )
 }
 
-/// Upper bound on the im2col buffer, in elements (16 MiB of f32). Larger outputs are
-/// processed in tiles of output positions so memory stays bounded for big images.
-const IM2COL_MAX_ELEMS: usize = 4 * 1024 * 1024;
+/// Output positions per im2col tile of the NCHW path, for rows of `col_len` elements of `T`.
+///
+/// A tile holds 128 KiB of im2col where that is 32 to 512 positions, so the block and gemm's
+/// packed copy of it stay in L2 while gemm's N stays wide enough to be efficient. On a
+/// ResNet18 and a small CNN (x86 AVX2, Core Ultra 7 155H), 128 KiB beat 256 KiB to 2 MiB
+/// blocks by 10-60% per layer.
+fn im2col_tile_positions<T>(col_len: usize) -> usize {
+    const COL_BLOCK_BYTES: usize = 128 << 10;
+    (COL_BLOCK_BYTES / (col_len * core::mem::size_of::<T>()).max(1)).clamp(32, 512)
+}
 
-/// 2D convolution on NCHW data: im2col + GEMM per (batch, group, tile of output positions).
+/// 2D convolution on NCHW data: im2col + GEMM per tile of output positions and group.
+///
+/// Output positions of all images are numbered together (`batch * out_h * out_w`) and split
+/// into tiles of `tile` positions, so a tile can span images. That keeps gemm's N wide for
+/// deep layers, whose images have few output positions each. Tiles run in parallel with
+/// per-thread buffers, and their gemms run single-threaded unless there are fewer tiles than
+/// threads. One gemm per image with gemm's own parallelism would fork and join the thread pool
+/// once per image and layer, and for small images the threads would spend most of their time
+/// waking up and going back to sleep.
 ///
 /// The im2col rows are ordered `(c_in, kh, kw)`, the same order as the OIHW weight, so the
-/// weight is the GEMM lhs as-is and the input needs no NHWC copy. The GEMM writes its
-/// `[c_out, tile]` block straight into the output.
+/// weight is the GEMM lhs as-is and the input needs no NHWC copy. A tile within one image is
+/// a block of the NCHW output (one row per channel, `out_h * out_w` apart), so gemm writes it
+/// in place; a tile spanning images goes through a buffer and is copied out image by image.
 #[allow(clippy::too_many_arguments)]
 fn conv2d_im2col_nchw<T>(
     x: &[T],
@@ -599,44 +615,53 @@ fn conv2d_im2col_nchw<T>(
     [pad_h, pad_w]: [usize; 2],
     [dilation_h, dilation_w]: [usize; 2],
     groups: usize,
-    max_col_elems: usize,
+    tile: usize,
 ) -> Vec<T>
 where
     T: bytemuck::Pod + Copy + Send + Sync + ElementConversion + 'static,
 {
     let zero = T::zeroed();
+    let one = T::from_elem(1.0f32);
     let spatial_out = out_h * out_w;
+    let positions = batch * spatial_out;
     let c_out_group = c_out / groups;
     let col_len = c_in_group * kernel_h * kernel_w;
     let in_plane = in_h * in_w;
 
     let mut output = vec![zero; batch * c_out * spatial_out];
-    if spatial_out == 0 || col_len == 0 || c_out_group == 0 {
+    if positions == 0 || col_len == 0 || c_out_group == 0 {
         return output;
     }
 
-    let tile = (max_col_elems / col_len).clamp(1, spatial_out);
-    // [col_len, tile], reused for every (batch, group, tile)
-    let mut col = vec![zero; col_len * tile];
+    let tile = tile.clamp(1, positions);
+    let num_tiles = positions.div_ceil(tile);
+    let dst = crate::ops::SendMutPtr::new(output.as_mut_ptr());
+    // With fewer tiles than threads (small batches, deep layers), each gemm is split as well.
+    #[cfg(feature = "rayon")]
+    let gemm_parallelism = if num_tiles < rayon::current_num_threads() {
+        gemm::Parallelism::Rayon(0)
+    } else {
+        gemm::Parallelism::None
+    };
+    #[cfg(not(feature = "rayon"))]
+    let gemm_parallelism = gemm::Parallelism::None;
 
-    for b in 0..batch {
+    // `col` is `[col_len, tile]` im2col, `gemm_out` is `[c_out_group, tile]` for tiles that span
+    // images.
+    let run_tile = |(col, gemm_out): &mut (Vec<T>, Vec<T>), t: usize| {
+        let start = t * tile;
+        let len = tile.min(positions - start);
+        let col = &mut col[..col_len * len];
         for g in 0..groups {
-            let x_group = &x[(b * c_in + g * c_in_group) * in_plane..][..c_in_group * in_plane];
-            let w_group = &w[g * c_out_group * col_len..][..c_out_group * col_len];
-            let out_group = &mut output[(b * c_out + g * c_out_group) * spatial_out..]
-                [..c_out_group * spatial_out];
-
-            for start in (0..spatial_out).step_by(tile) {
-                let n = tile.min(spatial_out - start);
-                let col = &mut col[..col_len * n];
-
-                let fill_row = |row_idx: usize, row: &mut [T]| {
+            for_each_image_part(spatial_out, start, start + len, |b, p, offset, run| {
+                let x_group = &x[(b * c_in + g * c_in_group) * in_plane..][..c_in_group * in_plane];
+                for (row_idx, row) in col.chunks_mut(len).enumerate() {
                     let c = row_idx / (kernel_h * kernel_w);
                     let kh = (row_idx / kernel_w) % kernel_h;
                     let kw = row_idx % kernel_w;
                     im2col_nchw_row(
-                        row,
-                        start,
+                        &mut row[offset..offset + run],
+                        p,
                         &x_group[c * in_plane..][..in_plane],
                         [in_h, in_w],
                         out_w,
@@ -644,63 +669,91 @@ where
                         [stride_h, stride_w],
                         [pad_h, pad_w],
                     );
-                };
-
-                #[cfg(feature = "rayon")]
-                {
-                    use rayon::prelude::*;
-                    // Batch short rows (late layers) so each task copies a useful amount
-                    let rows_per_task = (32 * 1024 / n).max(1);
-                    col.par_chunks_mut(n * rows_per_task)
-                        .enumerate()
-                        .for_each(|(task, rows)| {
-                            for (i, row) in rows.chunks_mut(n).enumerate() {
-                                fill_row(task * rows_per_task + i, row);
-                            }
-                        });
                 }
-                #[cfg(not(feature = "rayon"))]
-                for (row_idx, row) in col.chunks_mut(n).enumerate() {
-                    fill_row(row_idx, row);
-                }
+            });
 
-                #[cfg(feature = "rayon")]
-                let parallelism = if c_out_group * n * col_len >= 32 * 32 * 32 {
-                    gemm::Parallelism::Rayon(0)
-                } else {
-                    gemm::Parallelism::None
-                };
-                #[cfg(not(feature = "rayon"))]
-                let parallelism = gemm::Parallelism::None;
-
-                // out_group[:, start..start + n] = w_group[c_out_group, col_len] @ col[col_len, n]
-                unsafe {
-                    gemm::gemm(
-                        c_out_group,
-                        n,
-                        col_len,
-                        out_group[start..].as_mut_ptr(),
-                        1,
-                        spatial_out as isize,
-                        false,
-                        w_group.as_ptr(),
-                        1,
-                        col_len as isize,
-                        col.as_ptr(),
-                        1,
-                        n as isize,
-                        zero,
-                        T::from_elem(1.0f32),
-                        false,
-                        false,
-                        false,
-                        parallelism,
-                    );
-                }
+            let b = start / spatial_out;
+            let in_one_image = (start + len - 1) / spatial_out == b;
+            // SAFETY: tiles cover disjoint output positions, so concurrent tiles write disjoint
+            // output elements; the offsets are within the output, whose rows are `spatial_out`
+            // apart.
+            let (out, out_stride) = if in_one_image {
+                let offset = (b * c_out + g * c_out_group) * spatial_out + start % spatial_out;
+                (unsafe { dst.ptr_add(offset) }, spatial_out)
+            } else {
+                (gemm_out.as_mut_ptr(), len)
+            };
+            // out[c_out_group, len] = w_group[c_out_group, col_len] @ col[col_len, len]
+            // SAFETY: the operand strides and sizes match the buffers described above.
+            unsafe {
+                gemm::gemm(
+                    c_out_group,
+                    len,
+                    col_len,
+                    out,
+                    1,
+                    out_stride as isize,
+                    false,
+                    w.as_ptr().add(g * c_out_group * col_len),
+                    1,
+                    col_len as isize,
+                    col.as_ptr(),
+                    1,
+                    len as isize,
+                    zero,
+                    one,
+                    false,
+                    false,
+                    false,
+                    gemm_parallelism,
+                );
             }
+            if !in_one_image {
+                for_each_image_part(spatial_out, start, start + len, |b, p, offset, run| {
+                    for co in 0..c_out_group {
+                        let src = &gemm_out[co * len + offset..][..run];
+                        let o = (b * c_out + g * c_out_group + co) * spatial_out + p;
+                        // SAFETY: as for the gemm's output above.
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(src.as_ptr(), dst.ptr_add(o), run)
+                        };
+                    }
+                });
+            }
+        }
+    };
+    let init = || (vec![zero; col_len * tile], vec![zero; c_out_group * tile]);
+
+    #[cfg(feature = "rayon")]
+    {
+        use rayon::prelude::*;
+        (0..num_tiles).into_par_iter().for_each_init(init, run_tile);
+    }
+    #[cfg(not(feature = "rayon"))]
+    {
+        let mut buffers = init();
+        for t in 0..num_tiles {
+            run_tile(&mut buffers, t);
         }
     }
     output
+}
+
+/// Calls `f(image, first position in the image, first index in the range, length)` for the
+/// part of positions `start..end`, numbered across the batch, that lies in each image.
+fn for_each_image_part(
+    spatial_out: usize,
+    start: usize,
+    end: usize,
+    mut f: impl FnMut(usize, usize, usize, usize),
+) {
+    let mut q = start;
+    while q < end {
+        let (b, p) = (q / spatial_out, q % spatial_out);
+        let len = (spatial_out - p).min(end - q);
+        f(b, p, q - start, len);
+        q += len;
+    }
 }
 
 /// Fill one im2col row for output positions `start..start + row.len()`: the input plane value
@@ -3280,7 +3333,7 @@ mod tests {
 
     #[test]
     fn test_conv2d_im2col_nchw_tiled_matches_untiled() {
-        // A tiny im2col budget forces many tiles, including ones that start mid-row
+        // Small tiles start mid-row, and some span two images
         let (c_in, c_out, h, w) = (3, 5, 9, 11);
         let x: Vec<f32> = (0..2 * c_in * h * w)
             .map(|i| (i % 13) as f32 - 6.0)
@@ -3288,7 +3341,7 @@ mod tests {
         let wt: Vec<f32> = (0..c_out * c_in * 9)
             .map(|i| (i % 7) as f32 * 0.1)
             .collect();
-        let run = |budget| {
+        let run = |tile| {
             conv2d_im2col_nchw(
                 &x,
                 &wt,
@@ -3299,17 +3352,15 @@ mod tests {
                 [1, 1],
                 [1, 1],
                 1,
-                budget,
+                tile,
             )
         };
         let full = run(usize::MAX);
-        for budget in [27, 27 * 4, 27 * 7] {
+        // 30 positions per image: tiles of 7 and 4 span images, a tile of 1 never does
+        for tile in [1, 4, 7] {
             // Tile width changes the GEMM summation order, so allow rounding differences
-            for (i, (a, e)) in run(budget).iter().zip(&full).enumerate() {
-                assert!(
-                    (a - e).abs() < 1e-4,
-                    "budget {budget}, index {i}: {a} != {e}"
-                );
+            for (i, (a, e)) in run(tile).iter().zip(&full).enumerate() {
+                assert!((a - e).abs() < 1e-4, "tile {tile}, index {i}: {a} != {e}");
             }
         }
     }
